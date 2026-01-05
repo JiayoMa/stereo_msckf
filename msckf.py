@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from scipy.stats import chi2
 
 from utils import *
@@ -14,13 +15,14 @@ class IMUState(object):
     next_id = 0
 
     # Gravity vector in the world frame
-    gravity = np.array([0., 0., -9.81])
+    gravity = torch.tensor([0., 0., -9.81], device=DEVICE, dtype=DTYPE)
 
     # Transformation offset from the IMU frame to the body frame. 
     # The transformation takes a vector from the IMU frame to the 
     # body frame. The z axis of the body frame should point upwards.
     # Normally, this transform should be identity.
-    T_imu_body = Isometry3d(np.identity(3), np.zeros(3))
+    T_imu_body = Isometry3d(torch.eye(3, device=DEVICE, dtype=DTYPE), 
+                            torch.zeros(3, device=DEVICE, dtype=DTYPE))
 
     def __init__(self, new_id=None):
         # An unique identifier for the IMU state.
@@ -30,29 +32,29 @@ class IMUState(object):
 
         # Orientation
         # Take a vector from the world frame to the IMU (body) frame.
-        self.orientation = np.array([0., 0., 0., 1.])
+        self.orientation = torch.tensor([0., 0., 0., 1.], device=DEVICE, dtype=DTYPE)
 
         # Position of the IMU (body) frame in the world frame.
-        self.position = np.zeros(3)
+        self.position = torch.zeros(3, device=DEVICE, dtype=DTYPE)
         # Velocity of the IMU (body) frame in the world frame.
-        self.velocity = np.zeros(3)
+        self.velocity = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         # Bias for measured angular velocity and acceleration.
-        self.gyro_bias = np.zeros(3)
-        self.acc_bias = np.zeros(3)
+        self.gyro_bias = torch.zeros(3, device=DEVICE, dtype=DTYPE)
+        self.acc_bias = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         # These three variables should have the same physical
         # interpretation with `orientation`, `position`, and
         # `velocity`. There three variables are used to modify
         # the transition matrices to make the observability matrix
         # have proper null space.
-        self.orientation_null = np.array([0., 0., 0., 1.])
-        self.position_null = np.zeros(3)
-        self.velocity_null = np.zeros(3)
+        self.orientation_null = torch.tensor([0., 0., 0., 1.], device=DEVICE, dtype=DTYPE)
+        self.position_null = torch.zeros(3, device=DEVICE, dtype=DTYPE)
+        self.velocity_null = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         # Transformation between the IMU and the left camera (cam0)
-        self.R_imu_cam0 = np.identity(3)
-        self.t_cam0_imu = np.zeros(3)
+        self.R_imu_cam0 = torch.eye(3, device=DEVICE, dtype=DTYPE)
+        self.t_cam0_imu = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
 
 class CAMState(object):
@@ -68,18 +70,18 @@ class CAMState(object):
 
         # Orientation
         # Take a vector from the world frame to the camera frame.
-        self.orientation = np.array([0., 0., 0., 1.])
+        self.orientation = torch.tensor([0., 0., 0., 1.], device=DEVICE, dtype=DTYPE)
 
         # Position of the camera frame in the world frame.
-        self.position = np.zeros(3)
+        self.position = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         # These two variables should have the same physical
         # interpretation with `orientation` and `position`.
         # There two variables are used to modify the measurement
         # Jacobian matrices to make the observability matrix
         # have proper null space.
-        self.orientation_null = np.array([0., 0., 0., 1.])
-        self.position_null = np.zeros(3)
+        self.orientation_null = torch.tensor([0., 0., 0., 1.], device=DEVICE, dtype=DTYPE)
+        self.position_null = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         
 class StateServer(object):
@@ -92,8 +94,8 @@ class StateServer(object):
         self.cam_states = dict()   # <CAMStateID, CAMState>, ordered dict
 
         # State covariance matrix
-        self.state_cov = np.zeros((21, 21))
-        self.continuous_noise_cov = np.zeros((12, 12))
+        self.state_cov = torch.zeros(21, 21, device=DEVICE, dtype=DTYPE)
+        self.continuous_noise_cov = torch.zeros(12, 12, device=DEVICE, dtype=DTYPE)
 
 
 
@@ -122,10 +124,10 @@ class MSCKF(object):
         # The intial orientation and position will be set to the origin implicitly.
         # But the initial velocity and bias can be set by parameters.
         # TODO: is it reasonable to set the initial bias to 0?
-        self.state_server.imu_state.velocity = config.velocity
+        self.state_server.imu_state.velocity = to_tensor(config.velocity)
         self.reset_state_cov()
 
-        continuous_noise_cov = np.identity(12)
+        continuous_noise_cov = torch.eye(12, device=DEVICE, dtype=DTYPE)
         continuous_noise_cov[:3, :3] *= self.config.gyro_noise
         continuous_noise_cov[3:6, 3:6] *= self.config.gyro_bias_noise
         continuous_noise_cov[6:9, 6:9] *= self.config.acc_noise
@@ -133,22 +135,22 @@ class MSCKF(object):
         self.state_server.continuous_noise_cov = continuous_noise_cov
 
         # Gravity vector in the world frame
-        IMUState.gravity = config.gravity
+        IMUState.gravity = to_tensor(config.gravity)
 
         # Transformation between the IMU and the left camera (cam0)
-        T_cam0_imu = np.linalg.inv(config.T_imu_cam0)
+        T_cam0_imu = to_tensor(np.linalg.inv(config.T_imu_cam0))
         self.state_server.imu_state.R_imu_cam0 = T_cam0_imu[:3, :3].T
         self.state_server.imu_state.t_cam0_imu = T_cam0_imu[:3, 3]
 
         # Extrinsic parameters of camera and IMU.
-        T_cam0_cam1 = config.T_cn_cnm1
+        T_cam0_cam1 = to_tensor(config.T_cn_cnm1)
         CAMState.R_cam0_cam1 = T_cam0_cam1[:3, :3]
         CAMState.t_cam0_cam1 = T_cam0_cam1[:3, 3]
         Feature.R_cam0_cam1 = CAMState.R_cam0_cam1
         Feature.t_cam0_cam1 = CAMState.t_cam0_cam1
         IMUState.T_imu_body = Isometry3d(
-            config.T_imu_body[:3, :3],
-            config.T_imu_body[:3, 3])
+            to_tensor(config.T_imu_body[:3, :3]),
+            to_tensor(config.T_imu_body[:3, 3]))
 
         # Tracking rate.
         self.tracking_rate = None
@@ -233,11 +235,11 @@ class MSCKF(object):
         Initialize the IMU bias and initial orientation based on the 
         first few IMU readings.
         """
-        sum_angular_vel = np.zeros(3)
-        sum_linear_acc = np.zeros(3)
+        sum_angular_vel = torch.zeros(3, device=DEVICE, dtype=DTYPE)
+        sum_linear_acc = torch.zeros(3, device=DEVICE, dtype=DTYPE)
         for msg in self.imu_msg_buffer:
-            sum_angular_vel += msg.angular_velocity
-            sum_linear_acc += msg.linear_acceleration
+            sum_angular_vel = sum_angular_vel + to_tensor(msg.angular_velocity)
+            sum_linear_acc = sum_linear_acc + to_tensor(msg.linear_acceleration)
 
         gyro_bias = sum_angular_vel / len(self.imu_msg_buffer)
         self.state_server.imu_state.gyro_bias = gyro_bias
@@ -247,8 +249,8 @@ class MSCKF(object):
 
         # Initialize the initial orientation, so that the estimation
         # is consistent with the inertial frame.
-        gravity_norm = np.linalg.norm(gravity_imu)
-        IMUState.gravity = np.array([0., 0., -gravity_norm])
+        gravity_norm = torch.norm(gravity_imu)
+        IMUState.gravity = torch.tensor([0., 0., -gravity_norm.item()], device=DEVICE, dtype=DTYPE)
 
         self.state_server.imu_state.orientation = from_two_vectors(
             -IMUState.gravity, gravity_imu)
@@ -286,32 +288,36 @@ class MSCKF(object):
         imu_state = self.state_server.imu_state
         dt = time - imu_state.timestamp
 
+        m_gyro = to_tensor(m_gyro)
+        m_acc = to_tensor(m_acc)
+        
         gyro = m_gyro - imu_state.gyro_bias
         acc = m_acc - imu_state.acc_bias
 
         # Compute discrete transition and noise covariance matrix
-        F = np.zeros((21, 21))
-        G = np.zeros((21, 12))
+        F = torch.zeros(21, 21, device=DEVICE, dtype=DTYPE)
+        G = torch.zeros(21, 12, device=DEVICE, dtype=DTYPE)
 
         R_w_i = to_rotation(imu_state.orientation)
+        identity3 = torch.eye(3, device=DEVICE, dtype=DTYPE)
 
         F[:3, :3] = -skew(gyro)
-        F[:3, 3:6] = -np.identity(3)
+        F[:3, 3:6] = -identity3
         F[6:9, :3] = -R_w_i.T @ skew(acc)
         F[6:9, 9:12] = -R_w_i.T
-        F[12:15, 6:9] = np.identity(3)
+        F[12:15, 6:9] = identity3
 
-        G[:3, :3] = -np.identity(3)
-        G[3:6, 3:6] = np.identity(3)
+        G[:3, :3] = -identity3
+        G[3:6, 3:6] = identity3
         G[6:9, 6:9] = -R_w_i.T
-        G[9:12, 9:12] = np.identity(3)
+        G[9:12, 9:12] = identity3
 
         # Approximate matrix exponential to the 3rd order, which can be 
         # considered to be accurate enough assuming dt is within 0.01s.
         Fdt = F * dt
         Fdt_square = Fdt @ Fdt
         Fdt_cube = Fdt_square @ Fdt
-        Phi = np.identity(21) + Fdt + Fdt_square/2. + Fdt_cube/6.
+        Phi = torch.eye(21, device=DEVICE, dtype=DTYPE) + Fdt + Fdt_square/2. + Fdt_cube/6.
 
         # Propogate the state using 4th order Runge-Kutta
         self.predict_new_state(dt, gyro, acc)
@@ -323,16 +329,16 @@ class MSCKF(object):
         u = R_kk_1 @ IMUState.gravity
         # s = (u.T @ u).inverse() @ u.T
         # s = np.linalg.inv(u[:, None] * u) @ u
-        s = u / (u @ u)
+        s = u / torch.dot(u, u)
 
-        A1 = Phi[6:9, :3]
+        A1 = Phi[6:9, :3].clone()
         w1 = skew(imu_state.velocity_null - imu_state.velocity) @ IMUState.gravity
-        Phi[6:9, :3] = A1 - (A1 @ u - w1)[:, None] * s
+        Phi[6:9, :3] = A1 - torch.outer(A1 @ u - w1, s)
 
-        A2 = Phi[12:15, :3]
-        w2 = skew(dt*imu_state.velocity_null+imu_state.position_null - 
+        A2 = Phi[12:15, :3].clone()
+        w2 = skew(dt*imu_state.velocity_null + imu_state.position_null - 
             imu_state.position) @ IMUState.gravity
-        Phi[12:15, :3] = A2 - (A2 @ u - w2)[:, None] * s
+        Phi[12:15, :3] = A2 - torch.outer(A2 @ u - w2, s)
 
         # Propogate the state covariance matrix.
         Q = Phi @ G @ self.state_server.continuous_noise_cov @ G.T @ Phi.T * dt
@@ -350,15 +356,18 @@ class MSCKF(object):
             self.state_server.state_cov + self.state_server.state_cov.T) / 2.
 
         # Update the state correspondes to null space.
-        self.state_server.imu_state.orientation_null = imu_state.orientation
-        self.state_server.imu_state.position_null = imu_state.position
-        self.state_server.imu_state.velocity_null = imu_state.velocity
+        self.state_server.imu_state.orientation_null = imu_state.orientation.clone()
+        self.state_server.imu_state.position_null = imu_state.position.clone()
+        self.state_server.imu_state.velocity_null = imu_state.velocity.clone()
 
     def predict_new_state(self, dt, gyro, acc):
         # TODO: Will performing the forward integration using
         # the inverse of the quaternion give better accuracy?
-        gyro_norm = np.linalg.norm(gyro)
-        Omega = np.zeros((4, 4))
+        gyro = to_tensor(gyro)
+        acc = to_tensor(acc)
+        
+        gyro_norm = torch.norm(gyro)
+        Omega = torch.zeros(4, 4, device=DEVICE, dtype=DTYPE)
         Omega[:3, :3] = -skew(gyro)
         Omega[:3, 3] = gyro
         Omega[3, :3] = -gyro
@@ -367,15 +376,17 @@ class MSCKF(object):
         v = self.state_server.imu_state.velocity
         p = self.state_server.imu_state.position
 
+        identity4 = torch.eye(4, device=DEVICE, dtype=DTYPE)
+        
         if gyro_norm > 1e-5:
-            dq_dt = (np.cos(gyro_norm*dt*0.5) * np.identity(4) + 
-                np.sin(gyro_norm*dt*0.5)/gyro_norm * Omega) @ q
-            dq_dt2 = (np.cos(gyro_norm*dt*0.25) * np.identity(4) + 
-                np.sin(gyro_norm*dt*0.25)/gyro_norm * Omega) @ q
+            dq_dt = (torch.cos(gyro_norm*dt*0.5) * identity4 + 
+                torch.sin(gyro_norm*dt*0.5)/gyro_norm * Omega) @ q
+            dq_dt2 = (torch.cos(gyro_norm*dt*0.25) * identity4 + 
+                torch.sin(gyro_norm*dt*0.25)/gyro_norm * Omega) @ q
         else:
-            dq_dt = np.cos(gyro_norm*dt*0.5) * (np.identity(4) + 
+            dq_dt = torch.cos(gyro_norm*dt*0.5) * (identity4 + 
                 Omega*dt*0.5) @ q
-            dq_dt2 = np.cos(gyro_norm*dt*0.25) * (np.identity(4) + 
+            dq_dt2 = torch.cos(gyro_norm*dt*0.25) * (identity4 + 
                 Omega*dt*0.25) @ q
 
         dR_dt_transpose = to_rotation(dq_dt).T
@@ -401,7 +412,7 @@ class MSCKF(object):
         k4_v_dot = dR_dt_transpose @ acc + IMUState.gravity
 
         # yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)
-        q = dq_dt / np.linalg.norm(dq_dt)
+        q = dq_dt / torch.norm(dq_dt)
         v = v + (k1_v_dot + 2*k2_v_dot + 2*k3_v_dot + k4_v_dot)*dt/6.
         p = p + (k1_p_dot + 2*k2_p_dot + 2*k3_p_dot + k4_p_dot)*dt/6.
 
@@ -424,25 +435,26 @@ class MSCKF(object):
         cam_state = CAMState(imu_state.id)
         cam_state.timestamp = time
         cam_state.orientation = to_quaternion(R_w_c)
-        cam_state.position = t_c_w
-        cam_state.orientation_null = cam_state.orientation
-        cam_state.position_null = cam_state.position
+        cam_state.position = t_c_w.clone()
+        cam_state.orientation_null = cam_state.orientation.clone()
+        cam_state.position_null = cam_state.position.clone()
         self.state_server.cam_states[imu_state.id] = cam_state
 
         # Update the covariance matrix of the state.
         # To simplify computation, the matrix J below is the nontrivial block
         # in Equation (16) of "MSCKF" paper.
-        J = np.zeros((6, 21))
+        identity3 = torch.eye(3, device=DEVICE, dtype=DTYPE)
+        J = torch.zeros(6, 21, device=DEVICE, dtype=DTYPE)
         J[:3, :3] = R_i_c
-        J[:3, 15:18] = np.identity(3)
+        J[:3, 15:18] = identity3
         J[3:6, :3] = skew(R_w_i.T @ t_c_i)
-        J[3:6, 12:15] = np.identity(3)
-        J[3:6, 18:21] = np.identity(3)
+        J[3:6, 12:15] = identity3
+        J[3:6, 18:21] = identity3
 
         # Resize the state covariance matrix.
         # old_rows, old_cols = self.state_server.state_cov.shape
         old_size = self.state_server.state_cov.shape[0]   # symmetric
-        state_cov = np.zeros((old_size+6, old_size+6))
+        state_cov = torch.zeros(old_size+6, old_size+6, device=DEVICE, dtype=DTYPE)
         state_cov[:old_size, :old_size] = self.state_server.state_cov
 
         # Fill in the augmented state covariance.
@@ -462,13 +474,13 @@ class MSCKF(object):
             if feature.id not in self.map_server:
                 # This is a new feature.
                 map_feature = Feature(feature.id, self.optimization_config)
-                map_feature.observations[state_id] = np.array([
-                    feature.u0, feature.v0, feature.u1, feature.v1])
+                map_feature.observations[state_id] = torch.tensor([
+                    feature.u0, feature.v0, feature.u1, feature.v1], device=DEVICE, dtype=DTYPE)
                 self.map_server[feature.id] = map_feature
             else:
                 # This is an old feature.
-                self.map_server[feature.id].observations[state_id] = np.array([
-                    feature.u0, feature.v0, feature.u1, feature.v1])
+                self.map_server[feature.id].observations[state_id] = torch.tensor([
+                    feature.u0, feature.v0, feature.u1, feature.v1], device=DEVICE, dtype=DTYPE)
                 tracked_feature_num += 1
 
         self.tracking_rate = tracked_feature_num / (curr_feature_num+1e-5)
@@ -501,23 +513,23 @@ class MSCKF(object):
         p_c1 = R_w_c1 @ (p_w - t_c1_w)
 
         # Compute the Jacobians.
-        dz_dpc0 = np.zeros((4, 3))
+        dz_dpc0 = torch.zeros(4, 3, device=DEVICE, dtype=DTYPE)
         dz_dpc0[0, 0] = 1 / p_c0[2]
         dz_dpc0[1, 1] = 1 / p_c0[2]
         dz_dpc0[0, 2] = -p_c0[0] / (p_c0[2] * p_c0[2])
         dz_dpc0[1, 2] = -p_c0[1] / (p_c0[2] * p_c0[2])
 
-        dz_dpc1 = np.zeros((4, 3))
+        dz_dpc1 = torch.zeros(4, 3, device=DEVICE, dtype=DTYPE)
         dz_dpc1[2, 0] = 1 / p_c1[2]
         dz_dpc1[3, 1] = 1 / p_c1[2]
         dz_dpc1[2, 2] = -p_c1[0] / (p_c1[2] * p_c1[2])
         dz_dpc1[3, 2] = -p_c1[1] / (p_c1[2] * p_c1[2])
 
-        dpc0_dxc = np.zeros((3, 6))
+        dpc0_dxc = torch.zeros(3, 6, device=DEVICE, dtype=DTYPE)
         dpc0_dxc[:, :3] = skew(p_c0)
         dpc0_dxc[:, 3:] = -R_w_c0
 
-        dpc1_dxc = np.zeros((3, 6))
+        dpc1_dxc = torch.zeros(3, 6, device=DEVICE, dtype=DTYPE)
         dpc1_dxc[:, :3] = CAMState.R_cam0_cam1 @ skew(p_c0)
         dpc1_dxc[:, 3:] = -R_w_c1
 
@@ -529,15 +541,15 @@ class MSCKF(object):
 
         # Modifty the measurement Jacobian to ensure observability constrain.
         A = H_x   # shape: (4, 6)
-        u = np.zeros(6)
+        u = torch.zeros(6, device=DEVICE, dtype=DTYPE)
         u[:3] = to_rotation(cam_state.orientation_null) @ IMUState.gravity
         u[3:] = skew(p_w - cam_state.position_null) @ IMUState.gravity
 
-        H_x = A - (A @ u)[:, None] * u / (u @ u)
+        H_x = A - torch.outer(A @ u, u) / torch.dot(u, u)
         H_f = -H_x[:4, 3:6]
 
         # Compute the residual.
-        r = z - np.array([*p_c0[:2]/p_c0[2], *p_c1[:2]/p_c1[2]])
+        r = z - torch.stack([p_c0[0]/p_c0[2], p_c0[1]/p_c0[2], p_c1[0]/p_c1[2], p_c1[1]/p_c1[2]])
 
         # H_x: shape (4, 6)
         # H_f: shape (4, 3)
@@ -561,10 +573,10 @@ class MSCKF(object):
         jacobian_row_size = 4 * len(valid_cam_state_ids)
 
         cam_states = self.state_server.cam_states
-        H_xj = np.zeros((jacobian_row_size, 
-            21+len(self.state_server.cam_states)*6))
-        H_fj = np.zeros((jacobian_row_size, 3))
-        r_j = np.zeros(jacobian_row_size)
+        H_xj = torch.zeros(jacobian_row_size, 
+            21+len(self.state_server.cam_states)*6, device=DEVICE, dtype=DTYPE)
+        H_fj = torch.zeros(jacobian_row_size, 3, device=DEVICE, dtype=DTYPE)
+        r_j = torch.zeros(jacobian_row_size, device=DEVICE, dtype=DTYPE)
 
         stack_count = 0
         for cam_id in valid_cam_state_ids:
@@ -579,7 +591,7 @@ class MSCKF(object):
 
         # Project the residual and Jacobians onto the nullspace of H_fj.
         # svd of H_fj
-        U, _, _ = np.linalg.svd(H_fj)
+        U, _, _ = torch.linalg.svd(H_fj, full_matrices=True)
         A = U[:, 3:]
 
         H_x = A.T @ H_xj
@@ -595,8 +607,8 @@ class MSCKF(object):
         # complexity as in Equation (28), (29).
         if H.shape[0] > H.shape[1]:
             # QR decomposition
-            Q, R = np.linalg.qr(H, mode='reduced')  # if M > N, return (M, N), (N, N)
-            H_thin = R         # shape (N, N)
+            Q, R_qr = torch.linalg.qr(H, mode='reduced')  # if M > N, return (M, N), (N, N)
+            H_thin = R_qr         # shape (N, N)
             r_thin = Q.T @ r   # shape (N,)
         else:
             H_thin = H   # shape (M, N)
@@ -605,8 +617,8 @@ class MSCKF(object):
         # Compute the Kalman gain.
         P = self.state_server.state_cov
         S = H_thin @ P @ H_thin.T + (self.config.observation_noise * 
-            np.identity(len(H_thin)))
-        K_transpose = np.linalg.solve(S, H_thin @ P)
+            torch.eye(H_thin.shape[0], device=DEVICE, dtype=DTYPE))
+        K_transpose = torch.linalg.solve(S, H_thin @ P)
         K = K_transpose.T   # shape (N, K)
 
         # Compute the error of the state.
@@ -615,22 +627,22 @@ class MSCKF(object):
         # Update the IMU state.
         delta_x_imu = delta_x[:21]
 
-        if (np.linalg.norm(delta_x_imu[6:9]) > 0.5 or 
-            np.linalg.norm(delta_x_imu[12:15]) > 1.0):
+        if (torch.norm(delta_x_imu[6:9]) > 0.5 or 
+            torch.norm(delta_x_imu[12:15]) > 1.0):
             print('[Warning] Update change is too large')
 
         dq_imu = small_angle_quaternion(delta_x_imu[:3])
         imu_state = self.state_server.imu_state
         imu_state.orientation = quaternion_multiplication(
             dq_imu, imu_state.orientation)
-        imu_state.gyro_bias += delta_x_imu[3:6]
-        imu_state.velocity += delta_x_imu[6:9]
-        imu_state.acc_bias += delta_x_imu[9:12]
-        imu_state.position += delta_x_imu[12:15]
+        imu_state.gyro_bias = imu_state.gyro_bias + delta_x_imu[3:6]
+        imu_state.velocity = imu_state.velocity + delta_x_imu[6:9]
+        imu_state.acc_bias = imu_state.acc_bias + delta_x_imu[9:12]
+        imu_state.position = imu_state.position + delta_x_imu[12:15]
 
         dq_extrinsic = small_angle_quaternion(delta_x_imu[15:18])
         imu_state.R_imu_cam0 = to_rotation(dq_extrinsic) @ imu_state.R_imu_cam0
-        imu_state.t_cam0_imu += delta_x_imu[18:21]
+        imu_state.t_cam0_imu = imu_state.t_cam0_imu + delta_x_imu[18:21]
 
         # Update the camera states.
         for i, (cam_id, cam_state) in enumerate(
@@ -639,10 +651,10 @@ class MSCKF(object):
             dq_cam = small_angle_quaternion(delta_x_cam[:3])
             cam_state.orientation = quaternion_multiplication(
                 dq_cam, cam_state.orientation)
-            cam_state.position += delta_x_cam[3:]
+            cam_state.position = cam_state.position + delta_x_cam[3:]
 
         # Update state covariance.
-        I_KH = np.identity(len(K)) - K @ H_thin
+        I_KH = torch.eye(K.shape[0], device=DEVICE, dtype=DTYPE) - K @ H_thin
         # state_cov = I_KH @ self.state_server.state_cov @ I_KH.T + (
         #     K @ K.T * self.config.observation_noise)
         state_cov = I_KH @ self.state_server.state_cov   # ?
@@ -652,10 +664,10 @@ class MSCKF(object):
 
     def gating_test(self, H, r, dof):
         P1 = H @ self.state_server.state_cov @ H.T
-        P2 = self.config.observation_noise * np.identity(len(H))
-        gamma = r @ np.linalg.solve(P1+P2, r)
+        P2 = self.config.observation_noise * torch.eye(H.shape[0], device=DEVICE, dtype=DTYPE)
+        gamma = torch.dot(r, torch.linalg.solve(P1+P2, r))
 
-        if(gamma < self.chi_squared_test_table[dof]):
+        if(gamma.item() < self.chi_squared_test_table[dof]):
             return True
         else:
             return False
@@ -700,9 +712,9 @@ class MSCKF(object):
         if len(processed_feature_ids) == 0:
             return
 
-        H_x = np.zeros((jacobian_row_size, 
-            21+6*len(self.state_server.cam_states)))
-        r = np.zeros(jacobian_row_size)
+        H_x = torch.zeros(jacobian_row_size, 
+            21+6*len(self.state_server.cam_states), device=DEVICE, dtype=DTYPE)
+        r = torch.zeros(jacobian_row_size, device=DEVICE, dtype=DTYPE)
         stack_count = 0
 
         # Process the features which lose track.
@@ -757,9 +769,9 @@ class MSCKF(object):
             rotation = to_rotation(
                 cam_state_pairs[cam_state_idx][1].orientation)
             
-            distance = np.linalg.norm(position - key_position)
-            angle = 2 * np.arccos(to_quaternion(
-                rotation @ key_rotation.T)[-1])
+            distance = torch.norm(position - key_position).item()
+            angle = 2 * torch.arccos(to_quaternion(
+                rotation @ key_rotation.T)[-1]).item()
 
             if angle < 0.2618 and distance < 0.4 and self.tracking_rate > 0.5:
                 rm_cam_state_ids.append(cam_state_pairs[cam_state_idx][0])
@@ -816,8 +828,8 @@ class MSCKF(object):
             jacobian_row_size += 4*len(involved_cam_state_ids) - 3
 
         # Compute the Jacobian and residual.
-        H_x = np.zeros((jacobian_row_size, 21+6*len(self.state_server.cam_states)))
-        r = np.zeros(jacobian_row_size)
+        H_x = torch.zeros(jacobian_row_size, 21+6*len(self.state_server.cam_states), device=DEVICE, dtype=DTYPE)
+        r = torch.zeros(jacobian_row_size, device=DEVICE, dtype=DTYPE)
 
         stack_count = 0
         for feature in self.map_server.values():
@@ -854,7 +866,7 @@ class MSCKF(object):
 
             # Remove the corresponding rows and columns in the state
             # covariance matrix.
-            state_cov = self.state_server.state_cov.copy()
+            state_cov = self.state_server.state_cov.clone()
             if cam_state_end < state_cov.shape[0]:
                 size = state_cov.shape[0]
                 state_cov[cam_state_start:-6, :] = state_cov[cam_state_end:, :]
@@ -868,12 +880,13 @@ class MSCKF(object):
         """
         Reset the state covariance.
         """
-        state_cov = np.zeros((21, 21))
-        state_cov[ 3: 6,  3: 6] = self.config.gyro_bias_cov * np.identity(3)
-        state_cov[ 6: 9,  6: 9] = self.config.velocity_cov * np.identity(3)
-        state_cov[ 9:12,  9:12] = self.config.acc_bias_cov * np.identity(3)
-        state_cov[15:18, 15:18] = self.config.extrinsic_rotation_cov * np.identity(3)
-        state_cov[18:21, 18:21] = self.config.extrinsic_translation_cov * np.identity(3)
+        identity3 = torch.eye(3, device=DEVICE, dtype=DTYPE)
+        state_cov = torch.zeros(21, 21, device=DEVICE, dtype=DTYPE)
+        state_cov[ 3: 6,  3: 6] = self.config.gyro_bias_cov * identity3
+        state_cov[ 6: 9,  6: 9] = self.config.velocity_cov * identity3
+        state_cov[ 9:12,  9:12] = self.config.acc_bias_cov * identity3
+        state_cov[15:18, 15:18] = self.config.extrinsic_rotation_cov * identity3
+        state_cov[18:21, 18:21] = self.config.extrinsic_translation_cov * identity3
         self.state_server.state_cov = state_cov
 
     def reset(self):
@@ -883,8 +896,8 @@ class MSCKF(object):
         # Reset the IMU state.
         imu_state = IMUState()
         imu_state.id = self.state_server.imu_state.id
-        imu_state.R_imu_cam0 = self.state_server.imu_state.R_imu_cam0
-        imu_state.t_cam0_imu = self.state_server.imu_state.t_cam0_imu
+        imu_state.R_imu_cam0 = self.state_server.imu_state.R_imu_cam0.clone()
+        imu_state.t_cam0_imu = self.state_server.imu_state.t_cam0_imu.clone()
         self.state_server.imu_state = imu_state
 
         # Remove all existing camera states.
@@ -913,9 +926,9 @@ class MSCKF(object):
 
         # Check the uncertainty of positions to determine if 
         # the system can be reset.
-        position_x_std = np.sqrt(self.state_server.state_cov[12, 12])
-        position_y_std = np.sqrt(self.state_server.state_cov[13, 13])
-        position_z_std = np.sqrt(self.state_server.state_cov[14, 14])
+        position_x_std = torch.sqrt(self.state_server.state_cov[12, 12]).item()
+        position_y_std = torch.sqrt(self.state_server.state_cov[13, 13]).item()
+        position_z_std = torch.sqrt(self.state_server.state_cov[14, 14]).item()
 
         if max(position_x_std, position_y_std, position_z_std 
             ) < self.config.position_std_threshold:
@@ -936,9 +949,9 @@ class MSCKF(object):
         imu_state = self.state_server.imu_state
         print('+++publish:')
         print('   timestamp:', imu_state.timestamp)
-        print('   orientation:', imu_state.orientation)
-        print('   position:', imu_state.position)
-        print('   velocity:', imu_state.velocity)
+        print('   orientation:', to_numpy(imu_state.orientation))
+        print('   position:', to_numpy(imu_state.position))
+        print('   velocity:', to_numpy(imu_state.velocity))
         print()
         
         T_i_w = Isometry3d(

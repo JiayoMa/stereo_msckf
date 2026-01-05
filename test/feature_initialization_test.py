@@ -1,12 +1,13 @@
 import unittest
 import numpy as np
+import torch
 
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from config import OptimizationConfigEuRoC
-from utils import to_quaternion, to_rotation, Isometry3d
+from utils import to_quaternion, to_rotation, Isometry3d, to_numpy, to_tensor
 from feature import Feature
 from msckf import CAMState
 
@@ -18,8 +19,8 @@ class TestFeature(unittest.TestCase):
         Test feature initialization.
         """
         optimization_config = OptimizationConfigEuRoC()
-        Feature.R_cam0_cam1 = np.identity(3)
-        Feature.t_cam0_cam1 = np.zeros(3)
+        Feature.R_cam0_cam1 = to_tensor(np.identity(3))
+        Feature.t_cam0_cam1 = to_tensor(np.zeros(3))
 
         # feature = np.array([0.5, 0., 0.])
         feature = np.random.random(3) * 0.5
@@ -75,7 +76,7 @@ class TestFeature(unittest.TestCase):
         measurements = []
         for i in range(6):
             cam_pose_inv = cam_poses[i].inverse()
-            p = cam_pose_inv.R @ feature + cam_pose_inv.t
+            p = to_numpy(cam_pose_inv.R @ to_tensor(feature) + cam_pose_inv.t)
             u, v = p[:2] / p[2] + np.random.randn(2) * 0.01
             measurements.append(np.array([u, v, u, v]))
 
@@ -91,8 +92,9 @@ class TestFeature(unittest.TestCase):
         # feature position and the groud truth.
         print('status:', status)
         print('ground truth position:\n', feature)
-        print('estimated position:\n', feature_object.position)
-        e = np.linalg.norm(feature - feature_object.position)
+        estimated_position = to_numpy(feature_object.position)
+        print('estimated position:\n', estimated_position)
+        e = np.linalg.norm(feature - estimated_position)
         print('error norm:', e)
         self.assertTrue(e < 0.05)
 
