@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+import torch
 
 import os
 import sys
@@ -16,10 +17,12 @@ class TestUtils(unittest.TestCase):
         """
         w = np.array([1., 2., 3.])
         w_hat = skew(w)
-        zero_vec = w_hat @ w
+        w_tensor = to_tensor(w)
+        zero_vec = to_numpy(w_hat @ w_tensor)
+        w_hat_np = to_numpy(w_hat)
 
-        self.assertEqual(np.linalg.matrix_rank(w_hat), 2)
-        self.assertTrue(np.all(zero_vec == 0))
+        self.assertEqual(np.linalg.matrix_rank(w_hat_np), 2)
+        self.assertTrue(np.allclose(zero_vec, 0))
 
     def test_normalize(self):
         """
@@ -28,7 +31,7 @@ class TestUtils(unittest.TestCase):
         q = np.array([1., 2., 3., 4.])
         q = quaternion_normalize(q)
 
-        self.assertAlmostEqual(np.linalg.norm(q), 1.0)
+        self.assertAlmostEqual(torch.norm(q).item(), 1.0)
 
     def test_to_rotation(self):
         """
@@ -40,7 +43,7 @@ class TestUtils(unittest.TestCase):
             [-1/3., -14/15., -2/15.],
             [2/3., -1/3., 2/3.],
             [-2/3., 2/15., 11/15.]]).T
-        R = to_rotation(q)
+        R = to_numpy(to_rotation(q))
 
         zero_matrix = R - R_gt
         self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
@@ -48,10 +51,10 @@ class TestUtils(unittest.TestCase):
         for _ in range(20):
             q = np.random.randn(4)
             q /= np.linalg.norm(q)
-            q_inv = quaternion_conjugate(q)
+            q_inv = to_numpy(quaternion_conjugate(q))
 
-            R = to_rotation(q)
-            R_inv = to_rotation(q_inv)
+            R = to_numpy(to_rotation(q))
+            R_inv = to_numpy(to_rotation(q_inv))
 
             zero_matrix = R @ R_inv - np.identity(3)
             self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
@@ -65,7 +68,7 @@ class TestUtils(unittest.TestCase):
         Test converting rotation matrix quaternion.
         """
         R = np.identity(3)
-        q = to_quaternion(R)
+        q = to_numpy(to_quaternion(R))
         zero_vec = q - np.array([0., 0., 0., 1.])
         self.assertAlmostEqual(np.linalg.norm(zero_vec), 0.0)
 
@@ -73,8 +76,8 @@ class TestUtils(unittest.TestCase):
             q = np.random.randn(4)
             q /= np.linalg.norm(q)
 
-            R = to_rotation(q)
-            R2 = to_rotation(to_quaternion(R))
+            R = to_numpy(to_rotation(q))
+            R2 = to_numpy(to_rotation(to_quaternion(R)))
             zero_matrix = R - R2
             self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
 
@@ -89,10 +92,10 @@ class TestUtils(unittest.TestCase):
             q2 /= np.linalg.norm(q2)
             q_prod = quaternion_multiplication(q1, q2)
 
-            R1 = to_rotation(q1)
-            R2 = to_rotation(q2)
+            R1 = to_numpy(to_rotation(q1))
+            R2 = to_numpy(to_rotation(q2))
             R_prod = R1 @ R2
-            R_prod_cp = to_rotation(q_prod)
+            R_prod_cp = to_numpy(to_rotation(q_prod))
 
             zero_matrix = R_prod - R_prod_cp
             self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
@@ -108,13 +111,13 @@ class TestUtils(unittest.TestCase):
             v1 /= np.linalg.norm(v1)
 
             q = from_two_vectors(v0, v1)
-            R = to_rotation(q)
+            R = to_numpy(to_rotation(q))
 
             zero_vec = R @ v0 - v1
             self.assertAlmostEqual(np.linalg.norm(zero_vec), 0.0)
 
             q_inv = from_two_vectors(v1, v0)
-            R_inv = to_rotation(q_inv)
+            R_inv = to_numpy(to_rotation(q_inv))
             zero_matrix = R @ R_inv - np.identity(3)
             self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
 
@@ -132,8 +135,8 @@ class TestUtils(unittest.TestCase):
         T = Isometry3d(R, t)
         T_inv = T.inverse()
         T_identity = T * T_inv
-        zero_matrix = T_identity.R - np.identity(3)
-        zero_vec = T_identity.t
+        zero_matrix = to_numpy(T_identity.R) - np.identity(3)
+        zero_vec = to_numpy(T_identity.t)
 
         self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
         self.assertAlmostEqual(np.linalg.norm(zero_vec), 0.0)
@@ -147,7 +150,7 @@ class TestUtils(unittest.TestCase):
             np.random.randn(3))
 
         T3 = T1 * T2
-        zero_matrix = T3.matrix() - T1.matrix() @ T2.matrix()
+        zero_matrix = to_numpy(T3.matrix()) - to_numpy(T1.matrix()) @ to_numpy(T2.matrix())
         self.assertAlmostEqual(np.linalg.norm(zero_matrix), 0.0)
 
 

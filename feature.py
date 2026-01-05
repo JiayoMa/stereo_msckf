@@ -1,6 +1,7 @@
 import numpy as np
+import torch
 
-from utils import Isometry3d, to_rotation
+from utils import Isometry3d, to_rotation, to_tensor, to_numpy, DEVICE, DTYPE
 
 
 
@@ -21,7 +22,7 @@ class Feature(object):
         self.observations = dict()   # <StateID, vector4d>
 
         # 3d postion of the feature in the world frame.
-        self.position = np.zeros(3)
+        self.position = torch.zeros(3, device=DEVICE, dtype=DTYPE)
 
         # A indicator to show if the 3d postion of the feature
         # has been initialized or not.
@@ -37,15 +38,18 @@ class Feature(object):
         Arguments:
             T_c0_c1: A rigid body transformation takes a vector in c0 frame 
                 to ci frame. (Isometry3d)
-            x: The current estimation. (vec3)
-            z: The ith measurement of the feature j in ci frame. (vec2)
+            x: The current estimation. (vec3 tensor)
+            z: The ith measurement of the feature j in ci frame. (vec2 tensor)
 
         Returns:
-            e: The cost of this observation. (double)
+            e: The cost of this observation. (tensor scalar)
         """
+        x = to_tensor(x)
+        z = to_tensor(z)
+        
         # Compute hi1, hi2, and hi3 as Equation (37).
-        alpha, beta, rho = x
-        h = T_c0_ci.R @ np.array([alpha, beta, 1.0]) + rho * T_c0_ci.t
+        alpha, beta, rho = x[0], x[1], x[2]
+        h = T_c0_ci.R @ torch.stack([alpha, beta, torch.ones_like(alpha)]) + rho * T_c0_ci.t
 
         # Predict the feature observation in ci frame.
         z_hat = h[:2] / h[2]
@@ -61,38 +65,41 @@ class Feature(object):
         Arguments:
             T_c0_c1: A rigid body transformation takes a vector in c0 frame 
                 to ci frame. (Isometry3d)
-            x: The current estimation. (vec3)
-            z: The ith measurement of the feature j in ci frame. (vec2)
+            x: The current estimation. (vec3 tensor)
+            z: The ith measurement of the feature j in ci frame. (vec2 tensor)
 
         Returns:
-            J: The computed Jacobian. (Matrix23)
-            r: The computed residual. (vec2)
-            w: Weight induced by huber kernel. (double)
+            J: The computed Jacobian. (Matrix23 tensor)
+            r: The computed residual. (vec2 tensor)
+            w: Weight induced by huber kernel. (float)
         """
+        x = to_tensor(x)
+        z = to_tensor(z)
+        
         # Compute hi1, hi2, and hi3 as Equation (37).
-        alpha, beta, rho = x
-        h = T_c0_ci.R @ np.array([alpha, beta, 1.0]) + rho * T_c0_ci.t
-        h1, h2, h3 = h
+        alpha, beta, rho = x[0], x[1], x[2]
+        h = T_c0_ci.R @ torch.stack([alpha, beta, torch.ones_like(alpha)]) + rho * T_c0_ci.t
+        h1, h2, h3 = h[0], h[1], h[2]
 
         # Compute the Jacobian.
-        W = np.zeros((3, 3))
+        W = torch.zeros(3, 3, device=x.device, dtype=x.dtype)
         W[:, :2] = T_c0_ci.R[:, :2]
         W[:, 2] = T_c0_ci.t
 
-        J = np.zeros((2, 3))
+        J = torch.zeros(2, 3, device=x.device, dtype=x.dtype)
         J[0] = W[0]/h3 - W[2]*h1/(h3*h3)
         J[1] = W[1]/h3 - W[2]*h2/(h3*h3)
 
         # Compute the residual.
-        z_hat = np.array([h1/h3, h2/h3])
+        z_hat = torch.stack([h1/h3, h2/h3])
         r = z_hat - z
 
         # Compute the weight based on the residual.
-        e = np.linalg.norm(r)
+        e = torch.norm(r)
         if e <= self.optimization_config.huber_epsilon:
             w = 1.0
         else:
-            w = self.optimization_config.huber_epsilon / (2*e)
+            w = self.optimization_config.huber_epsilon / (2*e.item())
 
         return J, r, w
 
@@ -104,21 +111,25 @@ class Feature(object):
         Arguments:
             T_c1_c2: A rigid body transformation taking a vector from c2 frame 
                 to c1 frame. (Isometry3d)
-            z1: feature observation in c1 frame. (vec2)
-            z2: feature observation in c2 frame. (vec2)
+            z1: feature observation in c1 frame. (vec2 tensor)
+            z2: feature observation in c2 frame. (vec2 tensor)
 
         Returns:
-            p: Computed feature position in c1 frame. (vec3)
+            p: Computed feature position in c1 frame. (vec3 tensor)
         """
+        z1 = to_tensor(z1)
+        z2 = to_tensor(z2)
+        
         # Construct a least square problem to solve the depth.
-        m = T_c1_c2.R @ np.array([*z1, 1.0])
+        one = torch.ones(1, device=z1.device, dtype=z1.dtype)
+        m = T_c1_c2.R @ torch.cat([z1, one])
         a = m[:2] - z2*m[2]                   # vec2
         b = z2*T_c1_c2.t[2] - T_c1_c2.t[:2]   # vec2
 
         # Solve for the depth.
-        depth = a @ b / (a @ a)
+        depth = torch.dot(a, b) / torch.dot(a, a)
         
-        p = np.array([*z1, 1.0]) * depth
+        p = torch.cat([z1, one]) * depth
         return p
 
     def check_motion(self, cam_states):
@@ -150,18 +161,20 @@ class Feature(object):
 
         # Get the direction of the feature when it is first observed.
         # This direction is represented in the world frame.
-        feature_direction = np.array([*self.observations[first_id][:2], 1.0])
-        feature_direction = feature_direction / np.linalg.norm(feature_direction)
+        obs = to_tensor(self.observations[first_id][:2])
+        one = torch.ones(1, device=obs.device, dtype=obs.dtype)
+        feature_direction = torch.cat([obs, one])
+        feature_direction = feature_direction / torch.norm(feature_direction)
         feature_direction = first_cam_pose.R @ feature_direction
 
         # Compute the translation between the first frame and the last frame. 
         # We assume the first frame and the last frame will provide the 
         # largest motion to speed up the checking process.
         translation = last_cam_pose.t - first_cam_pose.t
-        parallel = translation @ feature_direction
+        parallel = torch.dot(translation, feature_direction)
         orthogonal_translation = translation - parallel * feature_direction
 
-        return (np.linalg.norm(orthogonal_translation) > 
+        return (torch.norm(orthogonal_translation).item() > 
             self.optimization_config.translation_threshold)
 
     def initialize_position(self, cam_states):
@@ -180,7 +193,7 @@ class Feature(object):
             True if the estimated 3d position of the feature is valid. (bool)
         """
         cam_poses = []     # [Isometry3d]
-        measurements = []  # [vec2]
+        measurements = []  # [vec2 tensor]
 
         T_cam1_cam0 = Isometry3d(
             Feature.R_cam0_cam1, Feature.t_cam0_cam1).inverse()
@@ -192,8 +205,9 @@ class Feature(object):
                 continue
             
             # Add measurements.
-            measurements.append(m[:2])
-            measurements.append(m[2:])
+            m_tensor = to_tensor(m)
+            measurements.append(m_tensor[:2])
+            measurements.append(m_tensor[2:])
 
             # This camera pose will take a vector from this camera frame
             # to the world frame.
@@ -215,7 +229,8 @@ class Feature(object):
         # Generate initial guess
         initial_position = self.generate_initial_guess(
             cam_poses[-2], measurements[0], measurements[-2])
-        solution = np.array([*initial_position[:2], 1.0]) / initial_position[2]
+        one = torch.ones(1, device=initial_position.device, dtype=initial_position.dtype)
+        solution = torch.cat([initial_position[:2], one]) / initial_position[2]
 
         # Apply Levenberg-Marquart method to solve for the 3d position.
         lambd = self.optimization_config.initial_damping
@@ -225,10 +240,9 @@ class Feature(object):
         delta_norm = float('inf')
 
         # Compute the initial cost.
-        total_cost = 0.0
-        # for i, cam_pose in enumerate(cam_poses):
+        total_cost = torch.tensor(0.0, device=DEVICE, dtype=DTYPE)
         for cam_pose, measurement in zip(cam_poses, measurements):
-            total_cost += self.cost(cam_pose, solution, measurement)
+            total_cost = total_cost + self.cost(cam_pose, solution, measurement)
 
         # Outer loop.
         while (outer_loop_count < 
@@ -236,16 +250,16 @@ class Feature(object):
             and delta_norm > 
             self.optimization_config.estimation_precision):
 
-            A = np.zeros((3, 3))
-            b = np.zeros(3)
+            A = torch.zeros(3, 3, device=DEVICE, dtype=DTYPE)
+            b = torch.zeros(3, device=DEVICE, dtype=DTYPE)
             for cam_pose, measurement in zip(cam_poses, measurements):
                 J, r, w = self.jacobian(cam_pose, solution, measurement)
                 if w == 1.0:
-                    A += J.T @ J
-                    b += J.T @ r
+                    A = A + J.T @ J
+                    b = b + J.T @ r
                 else:
-                    A += w * w * J.T @ J
-                    b += w * w * J.T @ r
+                    A = A + w * w * J.T @ J
+                    b = b + w * w * J.T @ r
 
             # Inner loop.
             # Solve for the delta that can reduce the total cost.
@@ -253,13 +267,14 @@ class Feature(object):
                 self.optimization_config.inner_loop_max_iteration
                 and not is_cost_reduced):
 
-                delta = np.linalg.solve(A + lambd * np.identity(3), b)   # vec3
+                identity = torch.eye(3, device=DEVICE, dtype=DTYPE)
+                delta = torch.linalg.solve(A + lambd * identity, b)   # vec3
                 new_solution = solution - delta
-                delta_norm = np.linalg.norm(delta)
+                delta_norm = torch.norm(delta).item()
 
-                new_cost = 0.0
+                new_cost = torch.tensor(0.0, device=DEVICE, dtype=DTYPE)
                 for cam_pose, measurement in zip(cam_poses, measurements):
-                    new_cost += self.cost(
+                    new_cost = new_cost + self.cost(
                         cam_pose, new_solution, measurement)
 
                 if new_cost < total_cost:
@@ -277,7 +292,8 @@ class Feature(object):
 
         # Covert the feature position from inverse depth
         # representation to its 3d coordinate.
-        final_position = np.array([*solution[:2], 1.0]) / solution[2]
+        one = torch.ones(1, device=solution.device, dtype=solution.dtype)
+        final_position = torch.cat([solution[:2], one]) / solution[2]
 
         # Check if the solution is valid. Make sure the feature
         # is in front of every camera frame observing it.
